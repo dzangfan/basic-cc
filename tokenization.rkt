@@ -14,7 +14,7 @@
 (struct exn:fail:cc:tokenization exn:fail:cc () #:transparent
   #:extra-constructor-name make-exn:fail:cc:tokenization)
 
-(struct location (file line) #:transparent)
+(struct location (file line column) #:transparent)
 
 (struct token (type text location)
   #:transparent
@@ -23,9 +23,10 @@
      (make-constructor-style-printer
       (lambda (obj) (token-type obj))
       (lambda (obj) (list (token-text obj)
-                          (format "~A:~A"
+                          (format "~A:~A,~A"
                                   (~> obj token-location location-file)
-                                  (~> obj token-location location-line))))))])
+                                  (~> obj token-location location-line)
+                                  (~> obj token-location location-column))))))])
 
 (struct language/lexicon (regexp handler) #:transparent)
 
@@ -34,7 +35,9 @@
 (define (report-error tokenizer message)
   (define location (tokenizer-location tokenizer))
   (raise (make-exn:fail:cc:tokenization
-          (format "Tokenization error[~A:~A] ~A" (location-file location) (location-line location) message)
+          (format "Tokenization error[~A:~A,~A] ~A"
+                  (location-file location) (location-line location) (location-column location)
+                  message)
           (current-continuation-marks))))
 
 (define-syntax-rule (report-error* tokenizer format-string v ...)
@@ -42,8 +45,12 @@
 
 (define exclude-EOL-during-tokenization? (make-parameter #false))
 
+(define (update-location-column base-location column)
+  (match-let ([(struct location (file line _)) base-location])
+    (location file line column)))
+
 (define (make-tokenizer lexicon file in-port)
-  (tokenizer lexicon (location file 0) in-port))
+  (tokenizer lexicon (location file 0 0) in-port))
 
 (define (matched-positions->strings matched-positions original-text tokenizer)
   (let collect ([last-end 0] [rest-positions matched-positions] [collected null])
@@ -61,27 +68,30 @@
                 (define sub-matched/str
                   (for/list ([position (in-list (rest next-position))])
                     (and position (substring original-text (car position) (cdr position)))))
-                (define matched/str (cons main-matched/str sub-matched/str))
+                (define matched/str (list (cons main-matched/str sub-matched/str) start))
                 (collect end (rest rest-positions) (cons matched/str collected))])))
 
 (define (tokenize-line! tokenizer)
   (define next-line (read-line (tokenizer-in-port tokenizer)))
-  (define current-location (tokenizer-location tokenizer))
+  (define current-line-location (tokenizer-location tokenizer))
   (if (eof-object? next-line)
-      (list (token 'EOF #f current-location))
+      (list (token 'EOF #f current-line-location))
       (let ([matched-list (~> tokenizer tokenizer-lexicon language/lexicon-regexp (regexp-match-positions* next-line #:match-select values))])
         (unless matched-list (report-error* tokenizer "Unable to tokenize line: ~A" next-line))
         (define matched-list/str (matched-positions->strings matched-list next-line tokenizer))
         (define handler (~> tokenizer tokenizer-lexicon language/lexicon-handler))
         (define token-list
-          (for/list ([matched (in-list matched-list/str)]
-                     #:do [(define maybe-token (handler matched current-location))]
+          (for/list ([matched+start-position (in-list matched-list/str)]
+                     #:do [(match-define (list matched start-position) matched+start-position)]
+                     #:do [(define maybe-token (handler matched current-line-location start-position))]
                      #:when maybe-token)
             maybe-token))
-        (set-tokenizer-location! tokenizer (location (location-file current-location) (add1 (location-line current-location))))
+        (match-define (struct location (file line _)) current-line-location)
+        (set-tokenizer-location! tokenizer (location file (add1 line) 0))
         (if (exclude-EOL-during-tokenization?)
             token-list
-            (append token-list (list (token 'EOL #f current-location)))))))
+            (append token-list
+                    (list (token 'EOL #f (update-location-column current-line-location (string-length next-line)))))))))
 
 (define (tokenize lexicon in #:file [file "(string)"])
   (let ([tokenizer (make-tokenizer lexicon file (if (string? in) (open-input-string in) in))])
@@ -95,10 +105,10 @@
   (let rule-list->lexison ([rest-rule-list rule-list] [options null] [token-type-list null])
     (if (null? rest-rule-list)
         (language/lexicon (pregexp (string-join options "|"))
-                          (lambda (matched location)
+                          (lambda (matched location column)
                             (for/or ([sub-matched (in-list (rest matched))]
                                      [type (in-list token-type-list)])
-                              (and sub-matched (token type sub-matched location)))))
+                              (and sub-matched (token type sub-matched (update-location-column location column))))))
         (match-let ([(list regexp-str type capture?) (first rest-rule-list)])
           (rule-list->lexison (rest rest-rule-list)
                               (cons (if capture? (format "(~A)" regexp-str) (format "(?:~A)" regexp-str)) options)
@@ -125,10 +135,10 @@
           (matched-positions->strings string (make-tokenizer #f "(string)" #f))))
 
     (check-equal? (destructive-matching #px"\\d" "1234")
-                  '(("1") ("2") ("3") ("4")))
+                  '((("1") 0) (("2") 1) (("3") 2) (("4") 3)))
 
     (check-equal? (destructive-matching #px"a|(b)|(c)" "ababc")
-                  '(("a" #f #f) ("b" "b" #f) ("a" #f #f) ("b" "b" #f) ("c" #f "c")))
+                  '((("a" #f #f) 0) (("b" "b" #f) 1) (("a" #f #f) 2) (("b" "b" #f) 3) (("c" #f "c") 4)))
 
     (check-exn exn:fail:cc:tokenization? (lambda () (destructive-matching #px"\\d" "123 4"))))
 
@@ -141,24 +151,24 @@
   (test-case "Test simple lexicon"
     (define tokenizer (make-tokenizer simple-lexicon "(string)" (open-input-string "hello 100 world")))
     (check-equal? (tokenize-line! tokenizer)
-                  (list (token 'WORD "hello" (location "(string)" 0))
-                        (token 'NUMBER "100" (location "(string)" 0))
-                        (token 'WORD "world" (location "(string)" 0))
-                        (token 'EOL #f (location "(string)" 0))))
+                  (list (token 'WORD "hello" (location "(string)" 0 0))
+                        (token 'NUMBER "100" (location "(string)" 0 6))
+                        (token 'WORD "world" (location "(string)" 0 10))
+                        (token 'EOL #f (location "(string)" 0 15))))
     (check-equal? (tokenize-line! tokenizer)
-                  (list (token 'EOF #f (location "(string)" 1)))))
+                  (list (token 'EOF #f (location "(string)" 1 0)))))
 
   (test-case "Test parameter excluding EOL"
     (define source-code "hello\nworld")
     (check-equal? (tokenize simple-lexicon source-code)
-                  (vector (token 'WORD "hello" (location "(string)" 0)) (token 'EOL #f (location "(string)" 0))
-                          (token 'WORD "world" (location "(string)" 1)) (token 'EOL #f (location "(string)" 1))
-                          (token 'EOF #f (location "(string)" 2))))
+                  (vector (token 'WORD "hello" (location "(string)" 0 0)) (token 'EOL #f (location "(string)" 0 5))
+                          (token 'WORD "world" (location "(string)" 1 0)) (token 'EOL #f (location "(string)" 1 5))
+                          (token 'EOF #f (location "(string)" 2 0))))
     (parameterize ([exclude-EOL-during-tokenization? #t])
       (check-equal? (tokenize simple-lexicon source-code)
-                    (vector (token 'WORD "hello" (location "(string)" 0))
-                            (token 'WORD "world" (location "(string)" 1))
-                            (token 'EOF #f (location "(string)" 2))))))
+                    (vector (token 'WORD "hello" (location "(string)" 0 0))
+                            (token 'WORD "world" (location "(string)" 1 0))
+                            (token 'EOF #f (location "(string)" 2 0))))))
 
   (define-language/lexicon stone-lexicon
     (NUM "[0-9]+")
@@ -177,32 +187,32 @@
          i = i + 1
        }")
     (define token-vector
-      (vector (token 'EOL #f (location "(string)" 0))
-              (token 'ID "i" (location "(string)" 1))
-              (token 'ID "=" (location "(string)" 1))
-              (token 'STR "\"#0\"" (location "(string)" 1))
-              (token 'EOL #f (location "(string)" 1))
-              (token 'EOL #f (location "(string)" 2))
-              (token 'ID "while" (location "(string)" 3))
-              (token 'ID "i" (location "(string)" 3))
-              (token 'ID "<" (location "(string)" 3))
-              (token 'NUM "10" (location "(string)" 3))
-              (token 'ID "{" (location "(string)" 3))
-              (token 'EOL #f (location "(string)" 3))
-              (token 'ID "sum" (location "(string)" 4))
-              (token 'ID "=" (location "(string)" 4))
-              (token 'ID "sum" (location "(string)" 4))
-              (token 'ID "+" (location "(string)" 4))
-              (token 'ID "i" (location "(string)" 4))
-              (token 'EOL #f (location "(string)" 4))
-              (token 'ID "i" (location "(string)" 5))
-              (token 'ID "=" (location "(string)" 5))
-              (token 'ID "i" (location "(string)" 5))
-              (token 'ID "+" (location "(string)" 5))
-              (token 'NUM "1" (location "(string)" 5))
-              (token 'EOL #f (location "(string)" 5))
-              (token 'ID "}" (location "(string)" 6))
-              (token 'EOL #f (location "(string)" 6))
-              (token 'EOF #f (location "(string)" 7))))
+      (vector (token 'EOL #f (location "(string)" 0 0))
+              (token 'ID "i" (location "(string)" 1 7))
+              (token 'ID "=" (location "(string)" 1 9))
+              (token 'STR "\"#0\"" (location "(string)" 1 11))
+              (token 'EOL #f (location "(string)" 1 15))
+              (token 'EOL #f (location "(string)" 2 16))
+              (token 'ID "while" (location "(string)" 3 7))
+              (token 'ID "i" (location "(string)" 3 13))
+              (token 'ID "<" (location "(string)" 3 15))
+              (token 'NUM "10" (location "(string)" 3 17))
+              (token 'ID "{" (location "(string)" 3 20))
+              (token 'EOL #f (location "(string)" 3 21))
+              (token 'ID "sum" (location "(string)" 4 9))
+              (token 'ID "=" (location "(string)" 4 13))
+              (token 'ID "sum" (location "(string)" 4 15))
+              (token 'ID "+" (location "(string)" 4 19))
+              (token 'ID "i" (location "(string)" 4 21))
+              (token 'EOL #f (location "(string)" 4 22))
+              (token 'ID "i" (location "(string)" 5 9))
+              (token 'ID "=" (location "(string)" 5 11))
+              (token 'ID "i" (location "(string)" 5 13))
+              (token 'ID "+" (location "(string)" 5 15))
+              (token 'NUM "1" (location "(string)" 5 17))
+              (token 'EOL #f (location "(string)" 5 18))
+              (token 'ID "}" (location "(string)" 6 7))
+              (token 'EOL #f (location "(string)" 6 8))
+              (token 'EOF #f (location "(string)" 7 0))))
     (check-equal? (tokenize stone-lexicon source-code)
                   token-vector)))
