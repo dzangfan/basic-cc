@@ -4,8 +4,23 @@
 (require racket/set)
 (require "common.rkt")
 
+(struct exn:fail:cc:parse:build-grammar exn:fail:cc:parse () #:transparent
+  #:extra-constructor-name make-exn:fail:cc:parse:build-grammar)
+
+(struct exn:fail:cc:parse:unknown-variable exn:fail:cc:parse () #:transparent
+  #:extra-constructor-name make-exn:fail:cc:parse:unknown-variable)
+
+(struct exn:fail:cc:parse:badly-recursive exn:fail:cc:parse () #:transparent
+  #:extra-constructor-name make-exn:fail:cc:parse:badly-recursive)
+
+(provide (struct-out exn:fail:cc:parse:build-grammar)
+         (struct-out exn:fail:cc:parse:unknown-variable)
+         (struct-out exn:fail:cc:parse:badly-recursive))
+
 (struct standard-grammar (alphabet variables product-table start-variable)
   #:transparent)
+
+(provide (struct-out standard-grammar))
 
 (define (cannot-build what lst message)
   (raise (make-exn:fail:cc:parse:build-grammar
@@ -70,7 +85,7 @@
 (define (non-terminal? grammar variable-or-token)
   (set-member? (standard-grammar-variables grammar) variable-or-token))
 
-(provide find-product terminal? non-terminal?)
+(provide build-standard-grammar find-product terminal? non-terminal?)
 
 (define (FIRST/1 grammar product computing-stack)
   (let forward ([symbols product] [first-symbol-set (seteq)])
@@ -93,6 +108,7 @@
 (define (FIRST grammar variable-or-token #:-computing [computing-stack null])
   (match variable-or-token
     ['epsilon (seteq 'epsilon)]
+    [product #:when (list? product) (FIRST/1 grammar product computing-stack)]
     [symbol #:when (terminal? grammar symbol) (seteq symbol)]
     [variable
      #:when (and (symbol? variable) (memq variable computing-stack))
@@ -200,7 +216,9 @@
     (check-equal? (FIRST grammar-4.28 't) (seteq 'LR 'ID))
     (check-equal? (FIRST grammar-4.28 'e) (seteq 'LR 'ID))
     (check-equal? (FIRST grammar-4.28 'e*) (seteq 'ADD 'epsilon))
-    (check-equal? (FIRST grammar-4.28 't*) (seteq 'STAR 'epsilon)))
+    (check-equal? (FIRST grammar-4.28 't*) (seteq 'STAR 'epsilon))
+    (check-equal? (FIRST grammar-4.28 '(t e*)) (FIRST grammar-4.28 'e))
+    (check-equal? (FIRST grammar-4.28 '(STAR f t*)) (seteq 'STAR)))
 
   (test-case "Test FOLLOW for grammar-4.28"
     (check-equal? (FOLLOW grammar-4.28 'e) (mutable-seteq 'RR 'EOF))
