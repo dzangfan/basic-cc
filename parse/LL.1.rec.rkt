@@ -26,9 +26,13 @@
               (define next-token (read-token reader #:peek? #t))
               (define action (find-action table variable (token-type next-token)))
               (unless action (raise (make-exn:fail:cc:parse:LL.1:failed
-                                     (format "[~A] cannot start with a ~A" variable (token-type next-token))
+                                     (format "[~A] cannot start with a ~A. Possible candidates includes:~%~A"
+                                             variable (token-type next-token)
+                                             (~>> table hash-keys (filter (match-lambda [(list variable* _) (eq? variable variable*)]))
+                                                  (map (match-lambda [(list _ terminal) terminal]))
+                                                  pretty-format))
                                      (current-continuation-marks)
-                                     next-token (list action))))
+                                     next-token (list variable))))
               (match-define (list head product) action)
               (define children
                 (for/list ([symbol (in-list product)])
@@ -38,12 +42,18 @@
                     (parse* LL.1-language reader symbol))))
               (cons variable (filter (lambda (x) x) children))]))
 
+(define (visualize-product product-or-variable)
+  (match product-or-variable
+    [(list variable body)
+     (format "  in product: ~A -> ~A" variable (~>> body (map symbol->string) (string-join _ " ")))]
+    [variable #:when (symbol? variable) (format "  trying to parse: ~A" variable)]))
+
 (define (parse LL.1-language in #:file [file "(string)"] #:as [variable (starting-variable LL.1-language)])
   (unless (LL-table-cached? LL.1-language) (cache-LL-table LL.1-language))
   (define reader (make-reader (LL.1-language*-lexicon LL.1-language) in #:file file))
   (with-handlers ([exn:fail:cc:parse:LL.1:failed?
                    (match-lambda [(struct exn:fail:cc:parse:LL.1:failed (m c t s))
-                                  (define stack (map (lambda (product) (format "  in product ~A" product)) s))
+                                  (define stack (map visualize-product s))
                                   (match-define (struct token (type text (struct location (file line column)))) t)
                                   (define cause
                                     (format "Caused by token [~A~A], ~A, line ~A column ~A"
