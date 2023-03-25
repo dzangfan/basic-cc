@@ -18,15 +18,12 @@
 
 (struct token (type text location)
   #:transparent
+  #:property prop:custom-print-quotable 'always
   #:methods gen:custom-write
   [(define write-proc
      (make-constructor-style-printer
       (lambda (obj) (token-type obj))
-      (lambda (obj) (list (token-text obj)
-                          (format "~A:~A,~A"
-                                  (~> obj token-location location-file)
-                                  (~> obj token-location location-line)
-                                  (~> obj token-location location-column))))))])
+      (lambda (obj) (list (token-text obj)))))])
 
 (struct language/lexicon (regexp handler) #:transparent)
 

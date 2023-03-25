@@ -46,7 +46,7 @@
 
 (define (read-token reader #:peek? [peek? #f])
   (match-define (struct token-reader (cursor buffer)) reader)
-  (define size (length buffer))
+  (define size (vector-length buffer))
   (if (>= cursor size)
       (vector-ref buffer (sub1 size))
       (begin0 (vector-ref buffer cursor)
