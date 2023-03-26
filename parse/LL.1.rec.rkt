@@ -48,19 +48,28 @@
      (format "  in product: ~A -> ~A" variable (~>> body (map symbol->string) (string-join _ " ")))]
     [variable #:when (symbol? variable) (format "  trying to parse: ~A" variable)]))
 
+(define (visualize-token t)
+  (match-define (struct token (type text (struct location (file line column)))) t)
+  (format "[~A~A], ~A, line ~A column ~A"
+          type (if text (string-append " " text) "") file line column))
+
 (define (parse LL.1-language in #:file [file "(string)"] #:as [variable (starting-variable LL.1-language)])
   (unless (LL-table-cached? LL.1-language) (cache-LL-table LL.1-language))
   (define reader (make-reader (LL.1-language*-lexicon LL.1-language) in #:file file))
-  (with-handlers ([exn:fail:cc:parse:LL.1:failed?
-                   (match-lambda [(struct exn:fail:cc:parse:LL.1:failed (m c t s))
-                                  (define stack (map visualize-product s))
-                                  (match-define (struct token (type text (struct location (file line column)))) t)
-                                  (define cause
-                                    (format "Caused by token [~A~A], ~A, line ~A column ~A"
-                                            type (if text (string-append " " text) "") file line column))
-                                  (define message (string-join (list* m cause stack) "\n"))
-                                  (raise (make-exn:fail:cc:parse message c))])])
-    (parse* LL.1-language reader variable)))
+  (begin0
+      (with-handlers ([exn:fail:cc:parse:LL.1:failed?
+                       (match-lambda [(struct exn:fail:cc:parse:LL.1:failed (m c t s))
+                                      (define stack (map visualize-product s))
+                                      
+                                      (define cause
+                                        (format "Caused by token ~A" (visualize-token t)))
+                                      (define message (string-join (list* m cause stack) "\n"))
+                                      (raise (make-exn:fail:cc:parse message c))])])
+        (parse* LL.1-language reader variable))
+    (let ([next-token (read-token reader #:peek? #t)])
+      (unless (eq? 'EOF (token-type next-token))
+        (raise (make-exn:fail:cc:parse (format "Expected end of file (EOF), but found ~A" (visualize-token next-token))
+                                       (current-continuation-marks)))))))
 
 (module+ test
 
@@ -108,4 +117,8 @@
                          (t* ,(token 'STAR "*" (location "(sdream)" 0 8))
                              (f ,(token 'ID "z" (location "(sdream)" 0 10)))
                              (t*)))
-                      (e*)))))
+                      (e*))))
+
+  (test-case "Test for incorrect source codefor grammar-4.28"
+    (check-exn exn:fail:cc:parse?
+               (lambda () (parse language-4.28 "x + x)")))))
