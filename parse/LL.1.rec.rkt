@@ -1,4 +1,4 @@
-#lang debug racket
+#lang racket
 
 (require threading)
 (require "common.rkt")
