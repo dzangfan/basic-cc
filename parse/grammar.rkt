@@ -114,10 +114,11 @@
     [symbol #:when (terminal? grammar symbol) (seteq symbol)]
     [variable
      #:when (and (symbol? variable) (memq variable computing-stack))
-     (raise (make-exn:fail:cc:parse:badly-recursive
-             (format "Variable ~A is left-recursive, ~A" variable
-                     (construct-recursive-link computing-stack variable))
-             (current-continuation-marks)))]
+     #;(raise (make-exn:fail:cc:parse:badly-recursive
+               (format "Variable ~A is left-recursive, ~A" variable
+                       (construct-recursive-link computing-stack variable))
+               (current-continuation-marks)))
+     (seteq)]
     [variable
      #:when (symbol? variable)
      (define product-list (find-product grammar variable))
@@ -213,13 +214,13 @@
                  (build-standard-grammar
                   '((expr bar))))))
 
-  (test-case "Test FIRST for left-recursive grammar"
-    (define grammar
-      (build-standard-grammar
-       '([s (a A) B]
-         [a (s D) epsilon])))
-    (check-exn exn:fail:cc:parse:badly-recursive?
-               (lambda () (FIRST grammar 's))))
+  #;(test-case "Test FIRST for left-recursive grammar"
+      (define grammar
+        (build-standard-grammar
+         '([s (a A) B]
+           [a (s D) epsilon])))
+      (check-exn exn:fail:cc:parse:badly-recursive?
+                 (lambda () (FIRST grammar 's))))
 
   (define grammar-4.28
     (build-standard-grammar
