@@ -30,6 +30,8 @@
 (define symbol-all-upper-case?
   (lambda~>> symbol->string string->list (andmap char-upper-case?)))
 
+(provide symbol-all-upper-case?)
+
 (define (collect-product product alphabet variables product-table is-token?)
   (match product
     [(list head _ ...)
@@ -160,6 +162,22 @@
   follow-set)
 
 (provide FIRST FOLLOW)
+
+(define (augment-grammar grammar)
+  (match-define (struct standard-grammar (alphabet variables product-table start-variable)) grammar)
+  (define start-variable*
+    (~> start-variable symbol->string (string-append "#") string->symbol))
+  (when (set-member? variables start-variable*)
+    (raise (make-exn:fail:cc:parse:build-grammar
+            (format "Name of starting variable for augmented grammar has been used (~A)" start-variable*)
+            (current-continuation-marks))))
+  (let ([product-table* (hash-copy product-table)]
+        [variables* (set-copy variables)])
+    (hash-set! product-table* start-variable* `((,start-variable)))
+    (set-add! variables* start-variable*)
+    (standard-grammar alphabet variables* product-table* start-variable*)))
+
+(provide augment-grammar)
 
 (module+ test
   (require rackunit)

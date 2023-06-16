@@ -32,9 +32,8 @@
 (define (report-error tokenizer message)
   (define location (tokenizer-location tokenizer))
   (raise (make-exn:fail:cc:tokenization
-          (format "Tokenization error[~A:~A,~A] ~A"
-                  (location-file location) (location-line location) (location-column location)
-                  message)
+          (format "Tokenization error[~A:L~A] ~A"
+                  (location-file location) (location-line location) message)
           (current-continuation-marks))))
 
 (define-syntax-rule (report-error* tokenizer format-string v ...)
