@@ -94,7 +94,7 @@
     (apply vector-append
            (for/list ([_ (in-naturals)]
                         #:do [(define token-list (tokenize-line! tokenizer))]
-                        #:final (eq? 'EOF (~> token-list first token-type)))
+                        #:final (and (not (null? token-list)) (eq? 'EOF (~> token-list first token-type))))
              (list->vector token-list)))))
 
 (define (build-lexicon rule-list)

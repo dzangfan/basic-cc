@@ -12,12 +12,12 @@
 (define (empty-action-table) null)
 
 (define (push-action action-table action #:state from-state #:when terminal)
-  (cons (list (list from-state terminal) action) action-table))
+  (set-add action-table (list (list from-state terminal) action)))
 
 (define (empty-goto-table) null)
 
 (define (push-goto goto-table to-state #:state from-state #:when variable)
-  (cons (list (list from-state variable) to-state) goto-table))
+  (set-add goto-table (list (list from-state variable) to-state)))
 
 (define (find-in-table action/goto-table #:state from-state #:when variable/terminal)
   (match (assoc (list from-state variable/terminal) action/goto-table)
