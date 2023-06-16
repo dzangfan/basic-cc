@@ -30,6 +30,18 @@
          push-goto empty-goto-table find-in-table
          (struct-out LR-table))
 
+(define (find-conflicts table)
+  (match-define (struct LR-table (action-table goto-table)) table)
+  (define conflict-table (make-hash))
+  (for ([action-map (in-list action-table)])
+    (match-define (list condition action) action-map)
+    (hash-set! conflict-table condition
+               (cons action (hash-ref conflict-table condition null))))
+  (for/hash ([(condition action-list) (in-hash conflict-table)] #:when (< 1 (length action-list)))
+    (values condition action-list)))
+
+(provide find-conflicts)
+
 (define (empty-stack) null)
 
 (define empty-stack? empty?)
