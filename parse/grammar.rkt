@@ -61,7 +61,7 @@
 (define (build-standard-grammar lst #:token? [is-token? symbol-all-upper-case?])
   (when (null? lst) (cannot-build "grammar" lst "Grammar must have at least one product"))
   (match-define (list first-product rest-products ...) lst)
-  (define alphabet (mutable-seteq))
+  (define alphabet (mutable-seteq 'EOF 'EOL))
   (define variables (mutable-seteq))
   (define product-table (make-hasheq))
   (define start-variable (collect-product first-product alphabet variables product-table is-token?))
