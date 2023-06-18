@@ -40,7 +40,7 @@
                (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
                  (tokenize language/lexicon in #:file file)))
              (define language-read
-               (let ([SLR-table (~>> language/grammar build-LR-automaton (LR-automaton->LR-table language/grammar))])
+               (let ([SLR-table (~>> language/grammar build-LR-automaton (LR-automaton->LR-table language/grammar) check-conflict)])
                  (lambda (in #:file [file "(string)"])
                    (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
                      (define reader (make-reader language/lexicon in #:file file))

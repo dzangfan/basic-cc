@@ -18,6 +18,11 @@
            #'(and symbol* inner-condition)))]
       [symbol
        (and (identifier? #'symbol)
+            (~> #'symbol syntax->datum symbol->string (string-prefix? "$")))
+       (~> #'symbol syntax->datum symbol->string
+           (substring 1) string->symbol (datum->syntax #'symbol _ #'symbol))]
+      [symbol
+       (and (identifier? #'symbol)
             (~> #'symbol syntax->datum symbol-all-upper-case?))
        #'(struct token ('symbol _ _))]
       [symbol
@@ -26,6 +31,16 @@
       [(_ component ...)
        (with-syntax ([(match-condition ...) (~>> #'(component ...) syntax->list (map expand-condition))])
          #'(list _ match-condition ...))]
+      [((name . _) component ...)
+       (with-syntax ([(match-condition ...) (~>> #'(component ...) syntax->list (map expand-condition))])
+         #'(list name match-condition ...))]
+      [(symbol component ...)
+       (and (identifier? #'symbol)
+            (~> #'symbol syntax->datum symbol->string (string-prefix? "$")))
+       (with-syntax ([name (~> #'symbol syntax->datum symbol->string
+                               (substring 1) string->symbol (datum->syntax #'symbol _ #'symbol))])
+         (with-syntax ([(match-condition ...) (~>> #'(component ...) syntax->list (map expand-condition))])
+           #'(list name match-condition ...)))]
       [(symbol component ...)
        (identifier? #'symbol)
        (with-syntax ([(match-condition ...) (~>> #'(component ...) syntax->list (map expand-condition))])
@@ -37,6 +52,10 @@
 
 (define-syntax (define-visitor-helper stx)
   (syntax-case stx ()
+    [(_ (name args ...) () (match-clauses ...))
+     #'(define (name tree args ...)
+         (match tree
+           match-clauses ...))]
     [(_ name () (match-clauses ...))
      #'(define (name tree)
          (match tree
@@ -105,4 +124,22 @@
     (check = 2 (eval/advanced "1 + 1"))
     (check = 4 (eval/advanced "2 * 2"))
     (check = 12 (eval/advanced "(1 + 2) * 4"))
-    (check = 3 (eval/advanced "((((1))))+ ((2))"))))
+    (check = 3 (eval/advanced "((((1))))+ ((2))")))
+
+  (define-visitor (language-4.1-eval/magic factor)
+    [@ID (* factor (~> ID token-text string->number))]
+    [(_ @e PLUS @t) (+ (language-4.1-eval/magic e factor) (language-4.1-eval/magic t factor))]
+    [(_ @t STAR @f) (* (language-4.1-eval/magic t factor) (language-4.1-eval/magic f factor))]
+    [(f _ @e _) (language-4.1-eval/magic e factor)]
+    [(_ $any) (language-4.1-eval/magic any factor)])
+
+  
+  (define (eval/10 text)
+    (~> text language-4.1-read (language-4.1-eval/magic 10)))
+
+  (test-case "Magic evaluator"
+    (check = 10 (eval/10 "1"))
+    (check = 20 (eval/10 "1 + 1"))
+    (check = 400 (eval/10 "2 * 2"))
+    (check = 1200 (eval/10 "(1 + 2) * 4"))
+    (check = 30 (eval/10 "((((1))))+ ((2))"))))
