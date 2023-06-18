@@ -89,6 +89,15 @@
 
 (provide build-standard-grammar find-product terminal? non-terminal?)
 
+(define (augmented-grammar? grammar)
+  (and (standard-grammar? grammar)
+       (let ([products (find-product grammar (standard-grammar-start-variable grammar))])
+         (and (= 1 (length products))
+              (= 1 (length (first products)))
+              (non-terminal? grammar (first (first products)))))))
+
+(provide augmented-grammar?)
+
 (define (FIRST/1 grammar product computing-stack)
   (let forward ([symbols product] [first-symbol-set (seteq)])
     (match symbols
@@ -149,18 +158,19 @@
   (unless (non-terminal? grammar variable)
     (raise (make-exn:fail:cc:parse (format "Can only compute FOLLOW set for a variable, but got ~A" variable)
                                    (current-continuation-marks))))
-  (when (memq variable computing-stack)
-    (raise (make-exn:fail:cc:parse:badly-recursive
-            (format "Variable ~A is badly right-recursive, ~A" variable
-                    (construct-recursive-link computing-stack variable))
-            (current-continuation-marks))))
-  (define follow-set (if (eq? variable (standard-grammar-start-variable grammar))
-                         (mutable-seteq 'EOF)
-                         (mutable-seteq)))
-  (for ([(head tail) (in-hash (standard-grammar-product-table grammar))])
-    (for ([product (in-list tail)])
-      (FOLLOW/1 grammar variable head product follow-set (cons variable computing-stack))))
-  follow-set)
+  #;(when (memq variable computing-stack)
+      (raise (make-exn:fail:cc:parse:badly-recursive
+              (format "Variable ~A is badly right-recursive, ~A" variable
+                      (construct-recursive-link computing-stack variable))
+              (current-continuation-marks))))
+  (cond [(memq variable computing-stack) (seteq)]
+        [else (define follow-set (if (eq? variable (standard-grammar-start-variable grammar))
+                                     (mutable-seteq 'EOF)
+                                     (mutable-seteq)))
+              (for ([(head tail) (in-hash (standard-grammar-product-table grammar))])
+                (for ([product (in-list tail)])
+                  (FOLLOW/1 grammar variable head product follow-set (cons variable computing-stack))))
+              follow-set]))
 
 (provide FIRST FOLLOW)
 
@@ -193,7 +203,7 @@
          (c (a c))
          (a epsilon))))
     (check-equal? (standard-grammar-variables grammar) (list->mutable-seteq '(a b c)))
-    (check-equal? (standard-grammar-alphabet grammar) (list->mutable-seteq '(A B C)))
+    (check-equal? (standard-grammar-alphabet grammar) (list->mutable-seteq '(A B C EOF EOL)))
     (check-eq? (standard-grammar-start-variable grammar) 'a)
     (check-equal? (standard-grammar-product-table grammar)
                   #hash((a . ((A B) (B) (C) (epsilon)))
