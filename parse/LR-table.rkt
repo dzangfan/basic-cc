@@ -101,7 +101,26 @@
                 (current-continuation-marks)
                 stack next-token))]))
 
-(provide (struct-out exn:fail:cc:parse:LR-no-action) run-LR)
+(define (run-LR/simple-error table reader)
+  (match-define (struct LR-table (action-table goto-table)) table)
+  (with-handlers ([exn:fail:cc:parse:LR-no-action?
+                   (lambda (e)
+                     (define stack (exn:fail:cc:parse:LR-no-action-stack e))
+                     (define token (exn:fail:cc:parse:LR-no-action-token e))
+                     (match-define (list state _) (peek-stack stack))
+                     (define possible-terminals
+                       (for/list ([action-map (in-list action-table)] #:when (= state (first (first action-map))))
+                         (second (first action-map))))
+                     (raise (make-exn:fail:cc:parse
+                             (format "Expected ~A, but found ~A in column ~A, line ~A, file ~A"
+                                     possible-terminals (token-type token)
+                                     (~> token token-location location-column)
+                                     (~> token token-location location-line)
+                                     (~> token token-location location-file))
+                             (current-continuation-marks))))])
+    (run-LR (initialize-stack 0) table reader)))
+
+(provide (struct-out exn:fail:cc:parse:LR-no-action) run-LR run-LR/simple-error)
 
 (module+ test
 

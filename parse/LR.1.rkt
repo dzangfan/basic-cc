@@ -1,4 +1,4 @@
-#lang debug racket
+#lang racket
 
 (require threading)
 (require racket/set)
@@ -135,27 +135,6 @@
 
 (provide build-LR-automaton LR-automaton->LR-table build-LR.1-table)
 
-(define (run-LR.1 table reader)
-  (match-define (struct LR-table (action-table goto-table)) table)
-  (with-handlers ([exn:fail:cc:parse:LR-no-action?
-                   (lambda (e)
-                     (define stack (exn:fail:cc:parse:LR-no-action-stack e))
-                     (define token (exn:fail:cc:parse:LR-no-action-token e))
-                     (match-define (list state _) (peek-stack stack))
-                     (define possible-terminals
-                       (for/list ([action-map (in-list action-table)] #:when (= state (first (first action-map))))
-                         (second (first action-map))))
-                     (raise (make-exn:fail:cc:parse
-                             (format "Expected ~A, but found ~A in column ~A, line ~A, file ~A"
-                                     possible-terminals (token-type token)
-                                     (~> token token-location location-column)
-                                     (~> token token-location location-line)
-                                     (~> token token-location location-file))
-                             (current-continuation-marks))))])
-    (run-LR (initialize-stack 0) table reader)))
-
-(provide run-LR.1)
-
 (module+ test
 
   (require rackunit)
@@ -205,7 +184,7 @@
   (define (parse-4.1 text)
     (parameterize ([exclude-EOL-during-tokenization? #t])
       (let ([reader (make-reader language-4.1/lexicon (open-input-string text))])
-        (run-LR.1 LR-table-4.1 reader))))
+        (run-LR/simple-error LR-table-4.1 reader))))
 
   (define (basically-equal? a b)
     (cond [(token? a)

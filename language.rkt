@@ -3,9 +3,12 @@
 (require (for-syntax threading) threading)
 (require (for-syntax racket/list))
 (require "tokenization.rkt")
-(require "parse/common.rkt")
+(require "parse/common.rkt" (for-syntax "parse/common.rkt"))
 (require "parse/grammar.rkt")
-(require "parse/LR.0.rkt")
+(require "parse/LR-table.rkt")
+
+(require (only-in "parse/LR.0.rkt" build-LR.0-table))
+(require (only-in "parse/LR.1.rkt" build-LR.1-table))
 
 (begin-for-syntax
   (define (generate-name base-id #:prefix [prefix ""] #:suffix [suffix ""])
@@ -15,10 +18,28 @@
                    (string->symbol name)
                    base-id))
 
-  (define (find-option keyword options)
+  (define default-options
+    '((#:enable-EOL #f)
+      (#:allow-conflict #f)
+      (#:driver LR.1)))               ; LR.0, LR.1, or LALR
+
+  (define (find-option keyword options #:list [as-list? #f])
     (let ([option (assoc keyword options)])
-      (and option
-           (rest option)))))
+      (define result
+        (if option
+            (rest option)
+            (rest (assoc keyword default-options))))
+      (cond [as-list? result]
+            [(null? result) #t]
+            [else (first result)])))
+
+  (define (determine-builder driver-id)
+    (case driver-id
+      [(LR.0) #'build-LR.0-table]
+      [(LR.1) #'build-LR.1-table]
+      [else (raise (make-exn:fail:cc:parse
+                    (format "Unknown driver ~A. Supported drivers include LR.0, LR.1" driver-id)
+                    (current-continuation-marks)))])))
 
 (define-syntax (collect-lexicon&grammar&options stx)
   (syntax-case stx ()
@@ -26,9 +47,12 @@
      (let ([options (syntax->datum #'options)])
        (with-syntax ([language/lexicon (generate-name #'name #:suffix "/lexicon")]
                      [language/grammar (generate-name #'name #:suffix "/grammar")]
+                     [language/table (generate-name #'name #:suffix "/table")]
                      [language-cut (generate-name #'name #:suffix "-cut")]
                      [language-read (generate-name #'name #:suffix "-read")]
-                     [exclude-EOL? (if (find-option '#:enable-EOL options) #'#f #'#t)])
+                     [exclude-EOL? (if (find-option '#:enable-EOL options) #'#f #'#t)]
+                     [builder (determine-builder (find-option '#:driver options))]
+                     [check-conflict? (if (find-option '#:allow-conflict options) #'#f #'#t)])
          #'(begin
              (define-language/lexicon language/lexicon
                lexicon ...)
@@ -36,15 +60,18 @@
                (augment-grammar
                 (build-standard-grammar
                  (quote grammar))))
+             (define language/table
+               (~> language/grammar builder))
+             (when check-conflict?
+               (check-conflict language/table)
+               (void))
              (define (language-cut in #:file [file "(string)"])
                (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
                  (tokenize language/lexicon in #:file file)))
-             (define language-read
-               (let ([SLR-table (~>> language/grammar build-LR-automaton (LR-automaton->LR-table language/grammar) check-conflict)])
-                 (lambda (in #:file [file "(string)"])
-                   (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
-                     (define reader (make-reader language/lexicon in #:file file))
-                     (run-SLR SLR-table reader))))))))]
+             (define (language-read in #:file [file "(string)"])
+               (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
+                 (define reader (make-reader language/lexicon in #:file file))
+                 (run-LR/simple-error language/table reader))))))]
     [(_ name (s clauses ...) (lexicon ...) grammar options)
      (string? (syntax-e #'s))
      #'(collect-lexicon&grammar&options name (clauses ...) (lexicon ... s) grammar options)]
@@ -65,8 +92,8 @@
 (module+ test
 
   (require rackunit)
-  
-  (define-language language-4.1
+
+  (define-language language-4.1/LR.1
     (ID "\\w+")
     (PLUS "\\+")
     (STAR "\\*")
@@ -77,7 +104,16 @@
     (t (t STAR f) f)
     (f (LEFT e RIGHT) ID))
 
-  (define parse-4.1 language-4.1-read)
+  (define-language language-4.1/LR.0
+    (ID "\\w+")
+    (PLUS "\\+")
+    (STAR "\\*")
+    (LEFT "\\(")
+    (RIGHT "\\)")
+    "\\s*"
+    (e (e PLUS t) t)
+    (t (t STAR f) f)
+    (f (LEFT e RIGHT) ID))
 
   (define (basically-equal? a b)
     (cond [(token? a)
@@ -89,74 +125,78 @@
                 (andmap basically-equal? a b))]
           [else (equal? a b)]))
 
-  (test-case "Single token"
-    (check basically-equal?
-           (parse-4.1 "hello") `(e (t (f ,(token 'ID "hello" #f))))))
+  (define (check-parser parse-4.1)
+    (test-case "Single token"
+      (check basically-equal?
+             (parse-4.1 "hello") `(e (t (f ,(token 'ID "hello" #f))))))
 
-  (test-case "Binary operation"
-    (check basically-equal?
-           (parse-4.1 "a + b")
-           `(e (e (t (f ,(token 'ID "a" #f))))
-               ,(token 'PLUS "+" #f)
-               (t (f ,(token 'ID "b" #f)))))
-    (check basically-equal?
-           (parse-4.1 "a * b")
-           `(e (t (t (f ,(token 'ID "a" #f)))
-                  ,(token 'STAR "*" #f)
-                  (f ,(token 'ID "b" #f))))))
+    (test-case "Binary operation"
+      (check basically-equal?
+             (parse-4.1 "a + b")
+             `(e (e (t (f ,(token 'ID "a" #f))))
+                 ,(token 'PLUS "+" #f)
+                 (t (f ,(token 'ID "b" #f)))))
+      (check basically-equal?
+             (parse-4.1 "a * b")
+             `(e (t (t (f ,(token 'ID "a" #f)))
+                    ,(token 'STAR "*" #f)
+                    (f ,(token 'ID "b" #f))))))
 
-  (test-case "Binary operation string"
-    (check basically-equal?
-           (parse-4.1 "a + b + c")
-           `(e (e (e (t (f ,(token 'ID "a" #f))))
-                  ,(token 'PLUS "+" #f)
-                  (t (f ,(token 'ID "b" #f))))
-               ,(token 'PLUS "+" #f)
-               (t (f ,(token 'ID "c" #f)))))
-    (check basically-equal?
-           (parse-4.1 "a * b * c")
-           `(e (t (t (t (f ,(token 'ID "a" #f)))
-                     ,(token 'STAR "*" #f)
-                     (f ,(token 'ID "b" #f)))
-                  ,(token 'STAR "*" #f)
-                  (f ,(token 'ID "c" #f))))))
+    (test-case "Binary operation string"
+      (check basically-equal?
+             (parse-4.1 "a + b + c")
+             `(e (e (e (t (f ,(token 'ID "a" #f))))
+                    ,(token 'PLUS "+" #f)
+                    (t (f ,(token 'ID "b" #f))))
+                 ,(token 'PLUS "+" #f)
+                 (t (f ,(token 'ID "c" #f)))))
+      (check basically-equal?
+             (parse-4.1 "a * b * c")
+             `(e (t (t (t (f ,(token 'ID "a" #f)))
+                       ,(token 'STAR "*" #f)
+                       (f ,(token 'ID "b" #f)))
+                    ,(token 'STAR "*" #f)
+                    (f ,(token 'ID "c" #f))))))
 
-  (test-case "Priority"
-    (check basically-equal?
-           (parse-4.1 "a + b * c")
-           `(e (e (t (f ,(token 'ID "a" #f))))
-               ,(token 'PLUS "+" #f)
-               (t (t (f ,(token 'ID "b" #f)))
-                  ,(token 'STAR "*" #f)
-                  (f ,(token 'ID "c" #f)))))
+    (test-case "Priority"
+      (check basically-equal?
+             (parse-4.1 "a + b * c")
+             `(e (e (t (f ,(token 'ID "a" #f))))
+                 ,(token 'PLUS "+" #f)
+                 (t (t (f ,(token 'ID "b" #f)))
+                    ,(token 'STAR "*" #f)
+                    (f ,(token 'ID "c" #f)))))
 
-    (check basically-equal?
-           (parse-4.1 "a * b + c")
-           `(e (e (t (t (f ,(token 'ID "a" #f)))
-                     ,(token 'STAR "*" #f)
-                     (f ,(token 'ID "b" #f))))
-               ,(token 'PLUS "+" #f)
-               (t (f ,(token 'ID "c" #f))))))
+      (check basically-equal?
+             (parse-4.1 "a * b + c")
+             `(e (e (t (t (f ,(token 'ID "a" #f)))
+                       ,(token 'STAR "*" #f)
+                       (f ,(token 'ID "b" #f))))
+                 ,(token 'PLUS "+" #f)
+                 (t (f ,(token 'ID "c" #f))))))
 
-  (test-case "Grouping"
-    (check basically-equal?
-           (parse-4.1 "(a + b) * c")
-           `(e (t (t (f ,(token 'LEFT "(" #f)
-                        (e (e (t (f ,(token 'ID "a" #f))))
-                           ,(token 'PLUS "+" #f)
-                           (t (f ,(token 'ID "b" #f))))
-                        ,(token 'RIGHT ")" #f)))
-                  ,(token 'STAR "*" #f)
-                  (f ,(token 'ID "c" #f)))))
+    (test-case "Grouping"
+      (check basically-equal?
+             (parse-4.1 "(a + b) * c")
+             `(e (t (t (f ,(token 'LEFT "(" #f)
+                          (e (e (t (f ,(token 'ID "a" #f))))
+                             ,(token 'PLUS "+" #f)
+                             (t (f ,(token 'ID "b" #f))))
+                          ,(token 'RIGHT ")" #f)))
+                    ,(token 'STAR "*" #f)
+                    (f ,(token 'ID "c" #f)))))
 
-    (check basically-equal?
-           (parse-4.1 "(a) + ((b))")
-           `(e (e (t (f ,(token 'LEFT "(" #f)
-                        (e (t (f ,(token 'ID "a" #f))))
-                        ,(token 'RIGHT ")" #f))))
-               ,(token 'PLUS "+" #f)
-               (t (f ,(token 'LEFT "(" #f)
-                     (e (t (f ,(token 'LEFT "(" #f)
-                              (e (t (f ,(token 'ID "b" #f))))
-                              ,(token 'RIGHT ")" #f))))
-                     ,(token 'RIGHT ")" #f)))))))
+      (check basically-equal?
+             (parse-4.1 "(a) + ((b))")
+             `(e (e (t (f ,(token 'LEFT "(" #f)
+                          (e (t (f ,(token 'ID "a" #f))))
+                          ,(token 'RIGHT ")" #f))))
+                 ,(token 'PLUS "+" #f)
+                 (t (f ,(token 'LEFT "(" #f)
+                       (e (t (f ,(token 'LEFT "(" #f)
+                                (e (t (f ,(token 'ID "b" #f))))
+                                ,(token 'RIGHT ")" #f))))
+                       ,(token 'RIGHT ")" #f)))))))
+
+  (check-parser language-4.1/LR.0-read)
+  (check-parser language-4.1/LR.1-read))
