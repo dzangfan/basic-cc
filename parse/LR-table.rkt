@@ -1,6 +1,8 @@
 #lang racket
 
+(require threading)
 (require "common.rkt")
+(require "grammar.rkt")
 (require "../tokenization.rkt")
 
 (define (action-step-in state) (list 'S state))
@@ -40,7 +42,21 @@
   (for/hash ([(condition action-list) (in-hash conflict-table)] #:when (< 1 (length action-list)))
     (values condition action-list)))
 
-(provide find-conflicts)
+(define (check-conflict table)
+  (define conflict-table (find-conflicts table))
+  (define conflict-count (hash-count conflict-table))
+  (define error-message
+    (~> (for/list ([(condition action-list) (in-hash conflict-table)])
+          (match-define (list state terminal) condition)
+          (format "  STATE[~A] INPUT[~A]: ~A" state terminal (~> (map ~a action-list) (string-join ", "))))
+        (string-join "\n")))
+  (if (zero? conflict-count)
+      table
+      (raise (make-exn:fail:cc:parse:build-grammar
+              (format "~A conflicts have been detected:\n~A" conflict-count error-message)
+              (current-continuation-marks)))))
+
+(provide find-conflicts check-conflict)
 
 (define (empty-stack) null)
 

@@ -1,84 +1,77 @@
-#lang racket
+#lang debug racket
 
-(require racket/set)
-(require racket/list)
-(require data/queue)
 (require threading)
+(require racket/set)
+(require data/queue)
 (require "../tokenization.rkt")
 (require "common.rkt")
 (require "grammar.rkt")
 (require "LR-table.rkt")
+(require (prefix-in SLR: "LR.0.rkt"))
+(require (only-in "LR.0.rkt" LR-itemset))
 
-(struct item (variable clause point) #:transparent)
-
-(define (item-next-component item)
-  (let drop ([clause (item-clause item)] [downcount (item-point item)])
-    (and (pair? clause)
-         (if (zero? downcount)
-             (first clause)
-             (drop (rest clause) (sub1 downcount))))))
-
-(define (item-prev-component item*)
-  (match-define (struct item (variable clause point)) item*)
-  (and (> point 0)
-       (or (item-next-component (item variable clause (sub1 point)))
-           (last clause))))
+(struct item SLR:item (condition) #:transparent)
 
 (define (item-forward-component item0)
-  (match-define (struct item (variable clause point)) item0)
-  (item variable clause (add1 point)))
+  (match-define (struct SLR:item (variable clause point))
+    (SLR:item-forward-component item0))
+  (item variable clause point (item-condition item0)))
 
-(provide (struct-out item) item-next-component item-prev-component item-forward-component)
+(define (item-suffix item*)
+  (match-define (struct item (_ clause point condition)) item*)
+  (let drop ([rest-symbols clause] [downcount point])
+    (cond [(null? rest-symbols) (list condition)]
+          [(zero? downcount) (append rest-symbols (list condition))]
+          [else (drop (rest rest-symbols) (sub1 downcount))])))
 
-(struct LR-itemset (core closure) #:transparent)
+(define (extend-itemset grammar item*)
+  (define next-component (SLR:item-next-component item*))
+  (if (or (not next-component) (terminal? grammar next-component))
+      (set)
+      (~> (for/list ([condition (in-set (~>> item* item-forward-component item-suffix (FIRST grammar)))])
+            (~>> (find-product grammar next-component)
+                 (map (lambda (clause) (item next-component clause 0 condition)))))
+          flatten
+          list->set)))
+
+(define (CLOSURE grammar itemset-core)
+  (let build-closure ([waiting-set itemset-core]
+                      [itemset-closure (set)]
+                      [itemset-processed (set)])
+    (cond [(set-empty? waiting-set) (LR-itemset itemset-core itemset-closure)]
+          [else (define next-item (set-first waiting-set))
+                (define waiting-set+ (set-rest waiting-set))
+                (define itemset-processed+
+                  (set-add itemset-processed next-item))
+                (define new-itemset
+                  (~>> (extend-itemset grammar next-item)
+                       (set-subtract _ itemset-processed)))
+                (build-closure (set-union waiting-set+ new-itemset)
+                               (set-union itemset-closure new-itemset)
+                               itemset-processed+)])))
+
+(provide CLOSURE)
 
 (define (itemset->cores itemset)
   (let collect-cores ([cores null]
-                      [rest-itemset (set-union (LR-itemset-core itemset) (LR-itemset-closure itemset))])
+                      [rest-itemset (set-union (SLR:LR-itemset-core itemset) (SLR:LR-itemset-closure itemset))])
     (cond [(set-empty? rest-itemset) cores]
           [else (define next-item (set-first rest-itemset))
-                (define next-variable (item-next-component next-item))
+                (define next-variable (SLR:item-next-component next-item))
                 (define-values (group core)
                   (for/lists (group core)
-                             ([item (in-set rest-itemset)] #:when (eq? next-variable (item-next-component item)))
+                             ([item (in-set rest-itemset)] #:when (eq? next-variable (SLR:item-next-component item)))
                     (values item (item-forward-component item))))
                 (collect-cores (if next-variable (cons (list->set core) cores) cores)
                                (set-subtract rest-itemset (list->set group)))])))
 
-(define (extend-itemset grammar variable)
-  (~>> (find-product grammar variable)
-       (map (lambda (clause) (item variable clause 0)))
-       list->set))
-
-(define (CLOSURE grammar itemset-core)
-  (let build-closure ([waiting-set itemset-core]
-                      [itemset-closure (set)])
-    (cond [(set-empty? waiting-set) (LR-itemset itemset-core itemset-closure)]
-          [else (define next-item (set-first waiting-set))
-                (define waiting-set+ (set-rest waiting-set))
-                (define next-variable (item-next-component next-item))
-                (cond [(not (non-terminal? grammar next-variable))
-                       (build-closure waiting-set+ itemset-closure)]
-                      [else (define new-itemset (extend-itemset grammar next-variable))
-                            (define new-itemset* (set-subtract new-itemset itemset-closure))
-                            (build-closure (set-union waiting-set+ new-itemset*)
-                                           (set-union new-itemset itemset-closure))])])))
-
-(provide (struct-out LR-itemset) itemset->cores CLOSURE)
-
-(struct LR-state (id itemset [goto #:mutable]) #:transparent)
-
-(define (LR-state-add-goto! state variable id+)
-  (define goto0 (LR-state-goto state))
-  (set-LR-state-goto! state (cons (list variable id+) goto0)))
-
 (define/contract (build-LR-automaton grammar)
-  (-> augmented-grammar? (listof LR-state?))
+  (-> augmented-grammar? (listof SLR:LR-state?))
   (define core-queue0 (make-queue))
   (define table/core->id0 (make-hash))
   (let* ([start-variable (standard-grammar-start-variable grammar)]
          [clause (first (find-product grammar start-variable))]
-         [item (item start-variable clause 0)]
+         [item (item start-variable clause 0 'EOF)]
          [itemset (set item)])
     (enqueue! core-queue0 itemset)
     (hash-set! table/core->id0 itemset 0))
@@ -88,10 +81,10 @@
               [table/core->id table/core->id0])
     (cond [(queue-empty? core-queue)
            (for ([state (in-list state-list)])
-             (for ([core+ (in-list (~> state LR-state-itemset itemset->cores))])
+             (for ([core+ (in-list (~> state SLR:LR-state-itemset itemset->cores))])
                (define id+ (hash-ref table/core->id core+))
-               (define variable+ (item-prev-component (set-first core+)))
-               (LR-state-add-goto! state variable+ id+)))
+               (define variable+ (SLR:item-prev-component (set-first core+)))
+               (SLR:LR-state-add-goto! state variable+ id+)))
            state-list]
           [else (define next-core (dequeue! core-queue))
                 (define new-itemset (CLOSURE grammar next-core))
@@ -100,12 +93,9 @@
                   (set! id-pool (add1 id-pool))
                   (enqueue! core-queue core+)
                   (hash-set! table/core->id core+ id-pool))
-                (define new-state (LR-state new-id new-itemset null))
+                (define new-state (SLR:LR-state new-id new-itemset null))
                 (build id-pool (cons new-state state-list) core-queue table/core->id)])))
 
-(provide (struct-out LR-state)
-         LR-state-add-goto!
-         build-LR-automaton)
 
 (define (LR-automaton->LR-table grammar automaton)
   (let transform ([action-table (empty-action-table)]
@@ -113,25 +103,24 @@
                   [state-list automaton])
     (match state-list
       [(list) (LR-table action-table goto-table)]
-      [(list (struct LR-state (id (struct LR-itemset (core closure)) goto)) state-list* ...)
+      [(list (struct SLR:LR-state (id (struct LR-itemset (core closure)) goto)) state-list* ...)
        (define action-table+
          (for/fold ([action-table+ action-table] #:result action-table+)
                    ([item (in-set (set-union core closure))])
-           (cond [(and (eq? (item-variable item) (standard-grammar-start-variable grammar))
-                       (positive-integer? (item-point item)))
+           (cond [(and (eq? (SLR:item-variable item) (standard-grammar-start-variable grammar))
+                       (positive-integer? (SLR:item-point item)))
                   (push-action action-table+ (action-accept)
                                #:state id #:when 'EOF)]
-                 [(item-next-component item)
-                  (define variable/terminal (item-next-component item))
+                 [(SLR:item-next-component item)
+                  (define variable/terminal (SLR:item-next-component item))
                   (define next-state/id (second (assoc variable/terminal goto)))
                   (if (terminal? grammar variable/terminal)
                       (push-action action-table+ (action-step-in next-state/id)
                                    #:state id #:when variable/terminal)
                       action-table+)]
-                 [else (for/fold ([action-table++ action-table+] #:result action-table++)
-                                 ([variable* (in-set (FOLLOW grammar (item-variable item)))])
-                         (push-action action-table++ (action-reduce (item-variable item) (item-clause item))
-                                      #:state id #:when variable*))])))
+                 [else (push-action action-table+
+                                    (action-reduce (SLR:item-variable item) (SLR:item-clause item))
+                                    #:state id #:when (item-condition item))])))
        (define goto-table+
          (for/fold ([goto-table+ goto-table] #:result goto-table+)
                    ([variable/terminal+id+ (in-list goto)])
@@ -141,12 +130,12 @@
                goto-table+)))
        (transform action-table+ goto-table+ state-list*)])))
 
-(define (build-LR.0-table grammar)
+(define (build-LR.1-table grammar)
   (~>> grammar build-LR-automaton (LR-automaton->LR-table grammar)))
 
-(provide LR-automaton->LR-table build-LR.0-table)
+(provide build-LR-automaton LR-automaton->LR-table build-LR.1-table)
 
-(define (run-SLR table reader)
+(define (run-LR.1 table reader)
   (match-define (struct LR-table (action-table goto-table)) table)
   (with-handlers ([exn:fail:cc:parse:LR-no-action?
                    (lambda (e)
@@ -165,13 +154,35 @@
                              (current-continuation-marks))))])
     (run-LR (initialize-stack 0) table reader)))
 
-(provide run-SLR)
+(provide run-LR.1)
 
 (module+ test
 
-  (require "common.rkt")
-  (require "../tokenization.rkt")
   (require rackunit)
+
+  (define language-4.55/grammar
+    (build-standard-grammar
+     '((s# s) (s (c c)) (c (C c) D))))
+
+  (test-case "CLOSURE for LR(1)"
+    (check-equal? (CLOSURE language-4.55/grammar (set (item 's# '(s) 0 'EOF)))
+                  (LR-itemset (set (item 's# '(s) 0 'EOF))
+                              (set (item 's '(c c) 0 'EOF)
+                                   (item 'c '(C c) 0 'C)
+                                   (item 'c '(C c) 0 'D)
+                                   (item 'c '(D) 0 'C)
+                                   (item 'c '(D) 0 'D))))
+    (check-equal? (CLOSURE language-4.55/grammar (set (item 'c '(C c) 1 'C) (item 'c '(C c) 1 'D)))
+                  (LR-itemset (set (item 'c '(C c) 1 'C) (item 'c '(C c) 1 'D))
+                              (set (item 'c '(C c) 0 'C) (item 'c '(C c) 0 'D)
+                                   (item 'c '(D) 0 'C) (item 'c '(D) 0 'D))))
+    (check-equal? (CLOSURE language-4.55/grammar (set (item 'c '(C c) 1 'EOF)))
+                  (LR-itemset (set (item 'c '(C c) 1 'EOF))
+                              (set (item 'c '(C c) 0 'EOF)
+                                   (item 'c '(D) 0 'EOF))))
+    (check-equal? (CLOSURE language-4.55/grammar (set (item 'c '(D) 1 'C) (item 'c '(D) 1 'D)))
+                  (LR-itemset (set (item 'c '(D) 1 'C) (item 'c '(D) 1 'D))
+                              (set))))
 
   (define-language/lexicon language-4.1/lexicon
     (ID "\\w+")
@@ -189,12 +200,12 @@
        (f (LEFT e RIGHT) ID))))
 
   (define LR-table-4.1
-    (build-LR.0-table language/grammar-4.1))
+    (build-LR.1-table language/grammar-4.1))
 
   (define (parse-4.1 text)
     (parameterize ([exclude-EOL-during-tokenization? #t])
       (let ([reader (make-reader language-4.1/lexicon (open-input-string text))])
-        (run-SLR LR-table-4.1 reader))))
+        (run-LR.1 LR-table-4.1 reader))))
 
   (define (basically-equal? a b)
     (cond [(token? a)
@@ -276,6 +287,21 @@
                      (e (t (f ,(token 'LEFT "(" #f)
                               (e (t (f ,(token 'ID "b" #f))))
                               ,(token 'RIGHT ")" #f))))
-                     ,(token 'RIGHT ")" #f)))))))
+                     ,(token 'RIGHT ")" #f))))))
 
+  (define language-4.49/grammar
+    (build-standard-grammar
+     '((s (l EQ r) r)
+       (l (DE r) ID)
+       (r l))))
 
+  (define language-4.49/table!SLR
+    (~> language-4.49/grammar augment-grammar SLR:build-LR.0-table ))
+
+  (define language-4.49/table!LR.1
+    (~> language-4.49/grammar augment-grammar build-LR.1-table))
+
+  (test-case "Avoid conflicts"
+    (check-pred (lambda~> hash-empty? not)
+                (find-conflicts language-4.49/table!SLR))
+    (check-pred hash-empty? (find-conflicts language-4.49/table!LR.1))))
