@@ -8,9 +8,9 @@
 (require "parse/LR-table.rkt")
 
 (require (only-in "parse/LR.0.rkt" build-LR.0-table)
-         (prefix-in LR.0: (only-in "parse/LR.0.rkt" build-LR-automaton)))
+         (prefix-in LR.0: "parse/LR.0.rkt"))
 (require (only-in "parse/LR.1.rkt" build-LR.1-table)
-         (prefix-in LR.1: (only-in "parse/LR.1.rkt" build-LR-automaton)))
+         (prefix-in LR.1: "parse/LR.1.rkt"))
 
 (begin-for-syntax
   (define (generate-name base-id #:prefix [prefix ""] #:suffix [suffix ""])
@@ -23,7 +23,6 @@
   (define default-options
     '((#:enable-EOL #f)
       (#:allow-conflict #f)
-      (#:make-automaton #f)
       (#:driver LR.1)))               ; LR.0, LR.1, or LALR
 
   (define (find-option keyword options #:list [as-list? #f])
@@ -36,24 +35,13 @@
             [(null? result) #t]
             [else (first result)])))
 
-  (define (determine-builder driver-id)
+  (define (determine-builder+transformer driver-id)
     (case driver-id
-      [(LR.0) #'build-LR.0-table]
-      [(LR.1) #'build-LR.1-table]
+      [(LR.0) (list #'LR.0:build-LR-automaton #'LR.0:LR-automaton->LR-table)]
+      [(LR.1) (list #'LR.1:build-LR-automaton #'LR.1:LR-automaton->LR-table)]
       [else (raise (make-exn:fail:cc:parse
                     (format "Unknown driver ~A. Supported drivers include LR.0, LR.1" driver-id)
-                    (current-continuation-marks)))]))
-
-  (define (try-to-make-automaton options name language/grammar)
-    (if (not (find-option '#:make-automaton options))
-        #'(void)
-        (with-syntax ([language/grammar language/grammar]
-                      [language/automaton (generate-name name #:suffix "/automaton")]
-                      [maker (case (find-option '#:driver options)
-                               [(LR.0) #'LR.0:build-LR-automaton]
-                               [(LR.1) #'LR.1:build-LR-automaton])])
-          #'(define language/automaton
-              (maker language/grammar))))))
+                    (current-continuation-marks)))])))
 
 (define-syntax (collect-lexicon&grammar&options stx)
   (syntax-case stx ()
@@ -61,33 +49,41 @@
      (let ([options (syntax->datum #'options)])
        (with-syntax ([language/lexicon (generate-name #'name #:suffix "/lexicon")]
                      [language/grammar (generate-name #'name #:suffix "/grammar")]
+                     [language/automaton (generate-name #'name #:suffix "/automaton")]
                      [language/table (generate-name #'name #:suffix "/table")]
+                     [language/language (generate-name #'name #:suffix "/language")]
                      [language-cut (generate-name #'name #:suffix "-cut")]
                      [language-read (generate-name #'name #:suffix "-read")]
                      [exclude-EOL? (if (find-option '#:enable-EOL options) #'#f #'#t)]
-                     [builder (determine-builder (find-option '#:driver options))]
-                     [check-conflict? (if (find-option '#:allow-conflict options) #'#f #'#t)])
-         (with-syntax ([?define-language/automaton (try-to-make-automaton options #'name #'language/grammar)])
-           #'(begin
-               (define-language/lexicon language/lexicon
-                 lexicon ...)
-               (define language/grammar
-                 (augment-grammar
-                  (build-standard-grammar
-                   (quote grammar))))
-               ?define-language/automaton
-               (define language/table
-                 (~> language/grammar builder))
-               (when check-conflict?
-                 (check-conflict language/table)
-                 (void))
-               (define (language-cut in #:file [file "(string)"])
-                 (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
-                   (tokenize language/lexicon in #:file file)))
-               (define (language-read in #:file [file "(string)"])
-                 (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
-                   (define reader (make-reader language/lexicon in #:file file))
-                   (run-LR/simple-error language/table reader)))))))]
+                     [check-conflict? (if (find-option '#:allow-conflict options) #'#f #'#t)]
+                     [builder (~>> options (find-option '#:driver) determine-builder+transformer first)]
+                     [transformer (~>> options (find-option '#:driver) determine-builder+transformer second)])
+         #'(begin
+             (define-language/lexicon language/lexicon
+               lexicon ...)
+             (define language/grammar
+               (augment-grammar
+                (build-standard-grammar
+                 (quote grammar))))
+             (define language/automaton
+               (builder language/grammar))
+             (define language/table
+               (transformer language/grammar language/automaton))
+             (define language/language
+               (list language/lexicon
+                     language/grammar
+                     language/automaton
+                     language/table))
+             (when check-conflict?
+               (check-conflict language/table)
+               (void))
+             (define (language-cut in #:file [file "(string)"])
+               (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
+                 (tokenize language/lexicon in #:file file)))
+             (define (language-read in #:file [file "(string)"])
+               (parameterize ([exclude-EOL-during-tokenization? exclude-EOL?])
+                 (define reader (make-reader language/lexicon in #:file file))
+                 (run-LR/simple-error language/table reader))))))]
     [(_ name (s clauses ...) (lexicon ...) grammar options)
      (string? (syntax-e #'s))
      #'(collect-lexicon&grammar&options name (clauses ...) (lexicon ... s) grammar options)]

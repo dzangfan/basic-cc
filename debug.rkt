@@ -8,7 +8,11 @@
 (require (prefix-in LR.1: "parse/LR.1.rkt"))
 (require (prefix-in LR.0: "parse/LR.0.rkt"))
 
-(provide find-conflicts)
+(define (find-conflicts* language)
+  (match-define (list _ _ _ table) language)
+  (find-conflicts table))
+
+(provide (rename-out [find-conflicts* find-conflicts]))
 
 (define (LR-state-syntactic-symbol state)
   (define/contract syntactic-symbols
@@ -92,7 +96,8 @@
   (displayln (string-append header "\n"
                             (string-join reasons "\n"))))
 
-(define (describe-conflict grammar automaton LR-table state-id terminal)
+(define (describe-conflict language state-id terminal)
+  (match-define (list _ grammar automaton LR-table) language)
   (define conflicts (find-conflicts LR-table))
   (define/contract state LR-state? (find-state automaton state-id))
   (define itemset
@@ -123,7 +128,8 @@
         [action (list 'unknown action)])))
   (describe-conflict-reason grammar automaton state-id terminal conflict-reason))
 
-(define (describe-all-conflicts grammar automaton LR-table)
+(define (describe-all-conflicts language)
+  (match-define (list _ grammar automaton LR-table) language)
   (define conflicts (find-conflicts LR-table))
   (cond [(hash-empty? conflicts)
          (displayln "Grammar does not have conflicts")]
