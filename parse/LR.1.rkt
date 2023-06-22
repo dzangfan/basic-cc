@@ -26,6 +26,8 @@
           [(zero? downcount) (append rest-symbols (list condition))]
           [else (drop (rest rest-symbols) (sub1 downcount))])))
 
+(provide item-forward-component item-suffix)
+
 (define (extend-itemset grammar item*)
   (define next-component (SLR:item-next-component item*))
   (if (or (not next-component) (terminal? grammar next-component))
