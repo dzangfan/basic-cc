@@ -12,6 +12,8 @@
 
 (struct item SLR:item (condition) #:transparent)
 
+(provide (struct-out item))
+
 (define (item-forward-component item0)
   (match-define (struct SLR:item (variable clause point))
     (SLR:item-forward-component item0))
