@@ -136,7 +136,7 @@
         [else (define bar (format "*** ~A conflicts have been detected ***" (hash-count conflicts)))
               (displayln bar)
               (for ([condition (in-hash-keys conflicts)])
-                (describe-conflict grammar automaton LR-table (first condition) (second condition)))
+                (describe-conflict language (first condition) (second condition)))
               (displayln bar)]))
 
 (provide describe-conflict describe-all-conflicts)
