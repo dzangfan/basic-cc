@@ -53,13 +53,17 @@
 (define-syntax (define-visitor-helper stx)
   (syntax-case stx ()
     [(_ (name args ...) () (match-clauses ...))
-     #'(define (name tree args ...)
-         (match tree
-           match-clauses ...))]
+     (with-syntax ([parse-tree-name (~> "*parse-tree*" string->symbol (datum->syntax #'name _ #'name))])
+       #'(define (name tree args ...)
+           (define parse-tree-name tree)
+           (match tree
+             match-clauses ...)))]
     [(_ name () (match-clauses ...))
-     #'(define (name tree)
-         (match tree
-           match-clauses ...))]
+     (with-syntax ([parse-tree-name (~> "*parse-tree*" string->symbol (datum->syntax #'name _ #'name))])
+       #'(define (name tree)
+           (define parse-tree-name tree)
+           (match tree
+             match-clauses ...)))]
     [(_ name ([condition body ...] rest-clauses ...) (match-clauses ...))
      (with-syntax ([match-condition (expand-condition #'condition)])
        #'(define-visitor-helper name
