@@ -1,0 +1,58 @@
+* basic-cc -- An academic compiler compiler
+
+This repo contains a series of tools for building compilers, including lexer, parser (LL, LR(0), LR(1)), and debugger. This library aims to keep the complexity at a low level and provide intuitive interfaces, meaning that it is quite theoretical rather than practical.
+
+#+begin_src racket
+  #lang racket
+
+  (require basic-cc/language)
+
+  (define-language s-exp
+    "\\s+"                                ; Ignore characters matching this pattern
+    (L "\\(") (R "\\)") (SYM "\\w+")      ; Name of token must be [A-Z]+
+    (form SYM (L items R) (L R))          ; form -> SYM | L items R | L R
+    (items form (items form)))
+
+  (define source "(flatten (() (1 (2))))")
+
+  (s-exp-cut source)
+  ;; #(#<L: "("> #<SYM: "flatten"> #<L: "("> #<L: "("> #<R: ")">
+  ;;   #<L: "("> #<SYM: "1"> #<L: "("> #<SYM: "2"> #<R: ")">
+  ;;   #<R: ")"> #<R: ")"> #<R: ")"> #<EOF: #f>)
+
+  (s-exp-read source)
+  ;; (form #<L: "(">
+  ;;       (items
+  ;;        (items (form #<SYM: "flatten">))
+  ;;        (form #<L: "(">
+  ;;              (items
+  ;;               (items (form #<L: "("> #<R: ")">))
+  ;;               (form #<L: "(">
+  ;;                     (items (items (form #<SYM: "1">))
+  ;;                            (form #<L: "(">
+  ;;                                  (items (form #<SYM: "2">))
+  ;;                                  #<R: ")">))
+  ;;                     #<R: ")">))
+  ;;              #<R: ")">))
+  ;;       #<R: ")">)
+#+end_src
+
+The macro ~define-language~ will define a set of variables and functions to accomplish syntactic parsing. As shown above, ~s-exp-cut~ and ~s-exp-read~ play important roles in this process. Both of them have the same signature:
+
+#+begin_src racket
+  (language-cut/read in #:file filename)
+#+end_src
+
+where ~in~ is either a ~input-port~ or a string and ~filename~ is a string pointing to source of the input as metadata. Besides, ~define-language~ defines the following variables, though you can ignore them completely.
+
+- ~s-exp/lexicon~ Internal lexer object
+- ~s-exp/grammar~ Classical context-free grammar defined by 4-tuple
+- ~s-exp/automaton~ LR(1) automaton derived from ~s-exp/grammar~
+- ~s-exp/table~ General LR table for syntax parsing
+- ~s-exp/language~ 4-tuple of variables above
+
+Three options are provided for further control:
+
+- ~(#:enable-EOL)~ Generate EOL token for newline (default not)
+- ~(#:allow-conflict)~ Prevent the compiler compiler from raising exception when syntactic conflicts are found
+- ~(#:driver driver)~ Specify the parsing method, where driver is ~LR.0~ or ~LR.1~
