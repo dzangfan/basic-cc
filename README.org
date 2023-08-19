@@ -56,3 +56,5 @@ Three options are provided for further control:
 - ~(#:enable-EOL)~ Generate EOL token for newline (default not)
 - ~(#:allow-conflict)~ Prevent the compiler compiler from raising exception when syntactic conflicts are found
 - ~(#:driver driver)~ Specify the parsing method, where driver is ~LR.0~ or ~LR.1~
+
+A bigger example can be found [[https://github.com/dzangfan/juhz/blob/79af5d2ba7a417e5000e144fd8944519f537d6e4/language.rkt][here]].
